@@ -33,7 +33,9 @@
 typedef struct BlackDetectContext {
     const AVClass *class;
     double  black_min_duration_time; ///< minimum duration of detected black, in seconds
+    double  black_interval_time;     ///< reporting interval, in seconds
     int64_t black_min_duration;      ///< minimum duration of detected black, expressed in timebase units
+    int64_t black_interval;          ///< reporting interval, expressed in timebase units
     int64_t black_start;             ///< pts start time of the first black picture
     int64_t black_end;               ///< pts end time of the last black picture
     int64_t last_picref_pts;         ///< pts of the last input picture
@@ -52,6 +54,8 @@ typedef struct BlackDetectContext {
 static const AVOption blackdetect_options[] = {
     { "d",                  "set minimum detected black duration in seconds", OFFSET(black_min_duration_time), AV_OPT_TYPE_DOUBLE, {.dbl=2}, 0, DBL_MAX, FLAGS },
     { "black_min_duration", "set minimum detected black duration in seconds", OFFSET(black_min_duration_time), AV_OPT_TYPE_DOUBLE, {.dbl=2}, 0, DBL_MAX, FLAGS },
+    { "i",                  "set reporting interval duration in seconds", OFFSET(black_interval_time), AV_OPT_TYPE_DOUBLE, {.dbl=0}, 0, DBL_MAX, FLAGS },
+    { "black_interval",     "set reporting interval duration in seconds", OFFSET(black_interval_time), AV_OPT_TYPE_DOUBLE, {.dbl=0}, 0, DBL_MAX, FLAGS },
     { "picture_black_ratio_th", "set the picture black ratio threshold", OFFSET(picture_black_ratio_th), AV_OPT_TYPE_DOUBLE, {.dbl=.98}, 0, 1, FLAGS },
     { "pic_th",                 "set the picture black ratio threshold", OFFSET(picture_black_ratio_th), AV_OPT_TYPE_DOUBLE, {.dbl=.98}, 0, 1, FLAGS },
     { "pixel_black_th", "set the pixel black threshold", OFFSET(pixel_black_th), AV_OPT_TYPE_DOUBLE, {.dbl=.10}, 0, 1, FLAGS },
@@ -93,6 +97,8 @@ static int config_input(AVFilterLink *inlink)
 
     blackdetect->black_min_duration =
         blackdetect->black_min_duration_time / av_q2d(inlink->time_base);
+    blackdetect->black_interval =
+        blackdetect->black_interval_time / av_q2d(inlink->time_base);
 
     blackdetect->pixel_black_th_i = ff_fmt_is_in(inlink->format, yuvj_formats) ?
         // luminance_minimum_value + pixel_black_th * luminance_range_size
@@ -100,8 +106,9 @@ static int config_input(AVFilterLink *inlink)
         16 + blackdetect->pixel_black_th * (235 - 16);
 
     av_log(blackdetect, AV_LOG_VERBOSE,
-           "black_min_duration:%s pixel_black_th:%f pixel_black_th_i:%d picture_black_ratio_th:%f\n",
+           "black_min_duration:%s black_interval:%s pixel_black_th:%f pixel_black_th_i:%d picture_black_ratio_th:%f\n",
            av_ts2timestr(blackdetect->black_min_duration, &inlink->time_base),
+           av_ts2timestr(blackdetect->black_interval, &inlink->time_base),
            blackdetect->pixel_black_th, blackdetect->pixel_black_th_i,
            blackdetect->picture_black_ratio_th);
     return 0;
@@ -113,7 +120,7 @@ static void check_black_end(AVFilterContext *ctx)
     AVFilterLink *inlink = ctx->inputs[0];
 
     if ((blackdetect->black_end - blackdetect->black_start) >= blackdetect->black_min_duration) {
-        av_log(blackdetect, AV_LOG_INFO,
+        av_log(blackdetect, AV_LOG_ERROR,
                "black_start:%s black_end:%s black_duration:%s\n",
                av_ts2timestr(blackdetect->black_start, &inlink->time_base),
                av_ts2timestr(blackdetect->black_end,   &inlink->time_base),
@@ -166,6 +173,11 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *picref)
             blackdetect->black_start = picref->pts;
             av_dict_set(&picref->metadata, "lavfi.black_start",
                 av_ts2timestr(blackdetect->black_start, &inlink->time_base), 0);
+        } else if (blackdetect->black_interval >= blackdetect->black_min_duration &&
+                   picref->pts - blackdetect->black_start >= blackdetect->black_interval) {
+            blackdetect->black_end = picref->pts;
+            check_black_end(ctx);
+            blackdetect->black_start = blackdetect->black_end;
         }
     } else if (blackdetect->black_started) {
         /* black ends here */
